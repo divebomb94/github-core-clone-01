@@ -60,15 +60,10 @@ export function buildPack(shas: string[], objects: Objects): Buffer {
 
 export function inflateExact(buf: Buffer, start: number): { data: Buffer; next: number } {
   if (!Number.isInteger(start) || start < 0 || start >= buf.length) throw new Error('Invalid compressed stream offset');
-  // Success is monotone: inflateSync ignores bytes following the first stream.
-  inflateSync(buf.subarray(start));
-  let low = start + 1, high = buf.length;
-  while (low < high) {
-    const middle = low + Math.floor((high - low) / 2);
-    try { inflateSync(buf.subarray(start, middle)); high = middle; }
-    catch { low = middle + 1; }
-  }
-  return { data: inflateSync(buf.subarray(start, low)), next: low };
+  // Zlib reports how many input bytes the first complete stream consumed,
+  // excluding subsequent pack entries. Keep its normal strict truncation checks.
+  const result = inflateSync(buf.subarray(start), { info: true });
+  return { data: result.buffer, next: start + result.engine.bytesWritten };
 }
 
 export function applyDelta(base: Buffer, delta: Buffer): Buffer {
@@ -165,7 +160,7 @@ function tagTarget(data: Buffer): string {
   return match[1];
 }
 
-export function depthMap(wants: string[]): Map<string, number> {
+export function depthMap(wants: string[], maxDepth = Infinity): Map<string, number> {
   const depths = new Map<string, number>(), tags = new Set<string>();
   const queue: Array<[string, number]> = wants.map(sha => [sha, 1]);
   for (let i = 0; i < queue.length; i++) {
@@ -177,15 +172,29 @@ export function depthMap(wants: string[]): Map<string, number> {
     }
     if (object.type !== 'commit' || (depths.get(sha) ?? Infinity) <= depth) continue;
     depths.set(sha, depth);
-    for (const parent of parseCommit(object.data).parents) queue.push([parent, depth + 1]);
+    if (depth < maxDepth) for (const parent of parseCommit(object.data).parents) queue.push([parent, depth + 1]);
   }
   return depths;
 }
 export function ancestorsOf(tips: string[]): Set<string> { return new Set(depthMap(tips).keys()); }
-export function isAncestor(maybeAncestor: string, tip: string): boolean { return ancestorsOf([tip]).has(maybeAncestor); }
+export function isAncestor(maybeAncestor: string, tip: string): boolean {
+  const queue = [tip], visited = new Set<string>();
+  for (let i = 0; i < queue.length; i++) {
+    const sha = queue[i];
+    if (visited.has(sha)) continue;
+    visited.add(sha);
+    const object = readObject(sha);
+    if (object?.type === 'tag') queue.push(tagTarget(object.data));
+    else if (object?.type === 'commit') {
+      if (sha === maybeAncestor) return true;
+      queue.push(...parseCommit(object.data).parents);
+    }
+  }
+  return false;
+}
 export function shallowBoundary(wants: string[], depth: number): Set<string> {
   const boundary = new Set<string>();
-  for (const [sha, distance] of depthMap(wants)) {
+  for (const [sha, distance] of depthMap(wants, depth)) {
     if (distance === depth && parseCommit(readObject(sha)!.data).parents.length) boundary.add(sha);
   }
   return boundary;
