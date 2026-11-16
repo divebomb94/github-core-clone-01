@@ -5,6 +5,8 @@ import { registerContentRoutes } from './rest-contents.ts';
 import { registerIssueRoutes } from './rest-issues.ts';
 import { registerPullRoutes } from './rest-pulls.ts';
 import { registerGitHttpRoutes } from './rest-git.ts';
+import { registerGraphqlRoutes } from './rest-graphql.ts';
+import { registerMcpRoutes } from './rest-mcp.ts';
 
 export type Handler = (req: http.IncomingMessage, res: http.ServerResponse, params: Record<string, string>, body: unknown) => void;
 export type Router = { register: (method: string, pattern: string, handler: Handler) => void };
@@ -39,6 +41,8 @@ export function createApp(): http.Server {
   registerIssueRoutes(router, store);
   registerPullRoutes(router, store);
   registerGitHttpRoutes(router, store);
+  registerGraphqlRoutes(router, store);
+  registerMcpRoutes(router, store);
   let requestId = 0;
   void store;
   return http.createServer((req, res) => {
@@ -51,7 +55,7 @@ export function createApp(): http.Server {
       let body: unknown = null;
       if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method || '')) {
         try { body = path.endsWith('/git-upload-pack') || path.endsWith('/git-receive-pack') ? Buffer.concat(chunks) : chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null; }
-        catch { sendJson(res, 400, { message: 'Problems parsing JSON' }); return; }
+        catch { sendJson(res, 400, path === '/mcp' ? { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } } : { message: 'Problems parsing JSON' }); return; }
       }
       if (path !== '/healthz') {
         const expected = `Bearer ${process.env.MAKEFUN_SHOP_TOKEN ?? ''}`;

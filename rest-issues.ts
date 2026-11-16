@@ -48,10 +48,10 @@ export function registerIssueRoutes(router:Router,store:Store){
   issue.updatedAt=now;sendJson(res,200,issueJson(issue,repo));
  });
  router.register('POST',`${base}/issues/:number/comments`,(_q,res,p,b:any)=>{
-  const repo=find(p),issue=repo&&findIssue(repo,p);if(!issue)return nf(res);
+  const repo=find(p),issue=repo?.items.get(Number(p.number));if(!issue)return nf(res);
   if(!b||typeof b.body!=='string'||!b.body.trim())return vf(res);
   const now=new Date().toISOString(),comment:CommentRecord={id:store.nextId(),body:b.body,createdAt:now,updatedAt:now};
   issue.comments.push(comment);issue.updatedAt=now;sendJson(res,201,commentJson(comment));
  });
- router.register('GET',`${base}/issues/:number/comments`,(_q,res,p)=>{const repo=find(p),issue=repo&&findIssue(repo,p);if(!issue)return nf(res);sendJson(res,200,issue.comments.map(commentJson));});
+ router.register('GET',`${base}/issues/:number/comments`,(_q,res,p)=>{const repo=find(p),issue=repo?.items.get(Number(p.number));if(!issue)return nf(res);sendJson(res,200,issue.comments.map(commentJson));});
 }

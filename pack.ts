@@ -191,8 +191,16 @@ export function shallowBoundary(wants: string[], depth: number): Set<string> {
   return boundary;
 }
 
-export function collectFetchObjects(wants: string[], haves: Set<string>, boundary: Set<string>): string[] {
-  const excluded = ancestorsOf([...haves]), included = new Set<string>(), trees: string[] = [];
+export function collectFetchObjects(wants: string[], haves: Set<string>, boundary: Set<string>, haveBoundary = new Set<string>()): string[] {
+  const excluded = new Set<string>(), haveQueue = [...haves];
+  for (let i = 0; i < haveQueue.length; i++) {
+    const sha = haveQueue[i];
+    if (excluded.has(sha)) continue;
+    excluded.add(sha);
+    const object = readObject(sha);
+    if (object?.type === 'commit' && !haveBoundary.has(sha)) haveQueue.push(...parseCommit(object.data).parents);
+  }
+  const included = new Set<string>(), trees: string[] = [];
   const queue = [...wants], visited = new Set<string>();
   for (let i = 0; i < queue.length; i++) {
     const sha = queue[i];

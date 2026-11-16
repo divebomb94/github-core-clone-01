@@ -66,7 +66,7 @@ function lineCounts(change: Change) {
   return { additions: head.length - row[head.length], deletions: base.length - row[head.length] };
 }
 
-function pullFiles(record: PullRecord, repo: RepoRecord) {
+export function pullFiles(record: PullRecord, repo: RepoRecord) {
   const head = resolveRef(repo, record.headRef), base = resolveRef(repo, record.baseRef);
   const mb = head && base ? mergeBase(repo, head, base) : undefined;
   return [...diffTrees(treeMap(mb), treeMap(head))].map(([filename, change]) => {
@@ -75,7 +75,7 @@ function pullFiles(record: PullRecord, repo: RepoRecord) {
   });
 }
 
-function pullJson(record: PullRecord, repo: RepoRecord) {
+export function pullJson(record: PullRecord, repo: RepoRecord) {
   const files = pullFiles(record, repo);
   return {
     id: record.number, number: record.number, title: record.title, body: record.body,
@@ -87,6 +87,30 @@ function pullJson(record: PullRecord, repo: RepoRecord) {
     html_url: '', url: '', issue_url: '', changed_files: files.length,
     additions: files.reduce((sum, file) => sum + file.additions, 0), deletions: files.reduce((sum, file) => sum + file.deletions, 0)
   };
+}
+
+export function pullMergeable(repo: RepoRecord, pull: PullRecord): boolean {
+  const baseTip = resolveRef(repo, pull.baseRef), headTip = resolveRef(repo, pull.headRef);
+  if (!baseTip || !headTip) return false;
+  const common = treeMap(mergeBase(repo, baseTip, headTip));
+  const baseChanges = diffTrees(common, treeMap(baseTip)), headChanges = diffTrees(common, treeMap(headTip));
+  return [...headChanges].every(([path, change]) => !baseChanges.has(path) || baseChanges.get(path)!.headSha === change.headSha);
+}
+
+export function mergePull(repo: RepoRecord, pull: PullRecord, body: any = {}) {
+  if (pull.merged || pull.state === 'closed' || !pullMergeable(repo, pull)) throw new Error('Pull Request is not mergeable');
+  const baseTip = resolveRef(repo, pull.baseRef)!, headTip = resolveRef(repo, pull.headRef)!;
+  const base = treeMap(baseTip), head = treeMap(headTip);
+  for (const [path, change] of diffTrees(treeMap(mergeBase(repo, baseTip, headTip)), head)) {
+    if (change.headSha) base.set(path, head.get(path)!); else base.delete(path);
+  }
+  const now = new Date(), identity = `${VIEWER.name} <${VIEWER.email}> ${Math.floor(now.getTime() / 1000)} +0000`;
+  const title = body.commit_title || pull.title;
+  const message = body.commit_message ? `${title}\n\n${body.commit_message}` : title;
+  const sha = writeCommit({ tree: buildTree(base), parents: body.merge_method === 'merge' ? [baseTip, headTip] : [baseTip], author: identity, committer: identity, message });
+  setRef(repo, `refs/heads/${pull.baseRef}`, sha);
+  pull.state = 'closed'; pull.merged = true; pull.mergedAt = pull.updatedAt = now.toISOString(); pull.mergeCommitSha = sha;
+  return sha;
 }
 
 export function registerPullRoutes(router: Router, store: Store) {
@@ -123,23 +147,8 @@ export function registerPullRoutes(router: Router, store: Store) {
     const repo = find(p), pull = repo && findPull(repo, p.number);
     if (!repo || !pull) return sendJson(res, 404, { message: 'Not Found' });
     if (pull.merged || pull.state === 'closed') return sendJson(res, 405, { message: 'Pull request already merged' });
-    const baseTip = resolveRef(repo, pull.baseRef), headTip = resolveRef(repo, pull.headRef);
-    if (!baseTip || !headTip) return sendJson(res, 405, { message: 'Pull Request is not mergeable' });
-    const common = treeMap(mergeBase(repo, baseTip, headTip)), base = treeMap(baseTip), head = treeMap(headTip);
-    const baseChanges = diffTrees(common, base), headChanges = diffTrees(common, head);
-    for (const [path, change] of headChanges) {
-      if (baseChanges.has(path) && baseChanges.get(path)!.headSha !== change.headSha) return sendJson(res, 405, { message: 'Pull Request is not mergeable' });
-    }
-    for (const [path, change] of headChanges) {
-      if (change.headSha) base.set(path, head.get(path)!);
-      else base.delete(path);
-    }
-    const now = new Date(), identity = `${VIEWER.name} <${VIEWER.email}> ${Math.floor(now.getTime() / 1000)} +0000`;
-    const title = typeof body?.commit_title === 'string' && body.commit_title ? body.commit_title : pull.title;
-    const message = typeof body?.commit_message === 'string' && body.commit_message ? `${title}\n\n${body.commit_message}` : title;
-    const sha = writeCommit({ tree: buildTree(base), parents: body?.merge_method === 'merge' ? [baseTip, headTip] : [baseTip], author: identity, committer: identity, message });
-    setRef(repo, `refs/heads/${pull.baseRef}`, sha);
-    pull.state = 'closed'; pull.merged = true; pull.mergedAt = pull.updatedAt = now.toISOString(); pull.mergeCommitSha = sha;
+    if (!pullMergeable(repo, pull)) return sendJson(res, 405, { message: 'Pull Request is not mergeable' });
+    const sha = mergePull(repo, pull, body ?? {});
     sendJson(res, 200, { merged: true, sha, message: 'Pull request successfully merged and closed.' });
   });
 }

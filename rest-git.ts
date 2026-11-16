@@ -26,21 +26,25 @@ function sideband(pack: Buffer): Buffer {
   return Buffer.concat(chunks);
 }
 
-function selectFetchObjects(wants: string[], haves: Set<string>, depth: number | undefined): string[] {
+function fetchBoundary(wants: string[], clientShallow: Set<string>, depth: number | undefined): Set<string> {
+  return depth == null ? new Set() : shallowBoundary(clientShallow.size ? [...clientShallow] : wants, depth);
+}
+
+function selectFetchObjects(wants: string[], haves: Set<string>, depth: number | undefined, clientShallow: Set<string>): string[] {
   if (wants.some(sha => !readObject(sha))) throw new Error('Unknown want');
   const knownHaves = new Set([...haves].filter(sha => readObject(sha)));
-  const boundary = depth != null ? shallowBoundary(wants, depth) : new Set<string>();
-  const raw = collectFetchObjects(wants, depth != null ? new Set() : knownHaves, boundary);
-  const haveClosure = new Set(knownHaves.size ? collectFetchObjects([...knownHaves], new Set(), new Set()) : []);
+  const boundary = fetchBoundary(wants, clientShallow, depth);
+  const raw = collectFetchObjects(wants, depth != null || clientShallow.size ? new Set() : knownHaves, boundary);
+  const haveClosure = new Set(knownHaves.size ? collectFetchObjects([...knownHaves], new Set(), clientShallow) : []);
   return raw.filter(sha => !haveClosure.has(sha));
 }
 
 function shallowLines(wants: string[], haves: Set<string>, clientShallow: Set<string>, depth: number | undefined, delivered: Set<string>): string[] {
-  const boundary = depth != null ? shallowBoundary(wants, depth) : new Set<string>();
+  const boundary = fetchBoundary(wants, clientShallow, depth);
   const lines = [...boundary].map(sha => `shallow ${sha}\n`);
   for (const sha of clientShallow) {
     const object = readObject(sha);
-    if (!boundary.has(sha) && (wants.includes(sha) || haves.has(sha)) && object?.type === 'commit' &&
+    if (!boundary.has(sha) && object?.type === 'commit' &&
       parseCommit(object.data).parents.every((parent: string) => delivered.has(parent) || haves.has(parent))) lines.push(`unshallow ${sha}\n`);
   }
   return lines;
@@ -117,7 +121,7 @@ export function registerGitHttpRoutes(router: Router, store: Store): void {
       } else if (!['thin-pack', 'no-progress', 'ofs-delta', 'done'].includes(key)) throw new Error('Invalid argument');
     }
     if (!wants.length) throw new Error('Missing want');
-    const delivered = selectFetchObjects(wants, haves, depth);
+    const delivered = selectFetchObjects(wants, haves, depth, clientShallow);
     const objects = new Map(delivered.map(sha => [sha, readObject(sha)!]));
     const shallow = shallowLines(wants, haves, clientShallow, depth, new Set(delivered)).map(pktLine);
     const chunks = v2 ? [pktLine('acknowledgments\n'), pktLine('NAK\n'), pktDelim()] : [pktLine('NAK\n')];
