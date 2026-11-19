@@ -14,7 +14,6 @@ import (
 const gitZero = "0000000000000000000000000000000000000000"
 
 var gitOID = regexp.MustCompile(`^[0-9a-f]{40}$`)
-var gitCommand = regexp.MustCompile(`^([0-9a-f]{40}) ([0-9a-f]{40}) ([^\s\x00]+)$`)
 
 type gitPackEntry struct {
 	ready chan struct{}
@@ -623,11 +622,22 @@ func (a *App) gitReceive(w http.ResponseWriter, repo *Repo, body []byte) {
 		if len(parts) == 2 {
 			capabilities = gitSet(strings.Split(parts[1], " "))
 		}
-		match := gitCommand.FindStringSubmatch(parts[0])
-		if match == nil {
+		line := parts[0]
+		if len(line) < 83 || line[40] != ' ' || line[81] != ' ' {
 			panic("Invalid command")
 		}
-		commands = append(commands, update{match[1], match[2], match[3]})
+		old, next, ref := line[:40], line[41:81], line[82:]
+		for i := 0; i < 40; i++ {
+			for _, c := range [2]byte{old[i], next[i]} {
+				if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+					panic("Invalid command")
+				}
+			}
+		}
+		if strings.ContainsAny(ref, "\t\n\f\r \x00") {
+			panic("Invalid command")
+		}
+		commands = append(commands, update{old, next, ref})
 	}
 	// Parsing and decompression touch only the incoming pack, never shared state.
 	incoming := &GitStore{}

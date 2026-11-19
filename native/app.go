@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -67,6 +68,16 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, 401, map[string]string{"message": "Bad credentials"})
 		return
 	}
+	if strings.HasPrefix(path, "/api/v3/repos/") && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
+		segments := strings.Split(path, "/")
+		getIssue := r.Method == http.MethodGet && len(segments) == 8 && segments[7] != "" && segments[7] != "labels"
+		createIssue := r.Method == http.MethodPost && len(segments) == 7
+		// Leave empty segments to the generic router, which discards them.
+		if (getIssue || createIssue) && segments[4] != "" && segments[5] != "" && segments[6] == "issues" {
+			a.serveIssueFast(w, segments, body, getIssue)
+			return
+		}
+	}
 	// The TypeScript router discards empty segments, including trailing slashes.
 	parts := strings.FieldsFunc(path, func(c rune) bool { return c == '/' })
 	route := "/" + strings.Join(parts, "/")
@@ -113,7 +124,12 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if a.servePullRoutes(w, r, parts, issueBody) {
 		return
 	}
-	if a.serveIssueRoutes(w, r, parts, issueBody) {
+	issueParts := parts
+	// Reuse the repository label list for GET /issues/labels.
+	if r.Method == http.MethodGet && len(parts) == 7 && parts[5] == "issues" && parts[6] == "labels" {
+		issueParts = []string{parts[0], parts[1], parts[2], parts[3], parts[4], "labels"}
+	}
+	if a.serveIssueRoutes(w, r, issueParts, issueBody) {
 		return
 	}
 	if a.serveContentRoutes(w, r, parts, body) {
@@ -123,4 +139,57 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sendJSON(w, 404, map[string]string{"message": "Not Found"})
+}
+
+func (a *App) serveIssueFast(w http.ResponseWriter, segments []string, body map[string]any, getIssue bool) {
+	owner, err := url.PathUnescape(segments[4])
+	if err != nil {
+		notFound(w)
+		return
+	}
+	name, err := url.PathUnescape(segments[5])
+	if err != nil {
+		notFound(w)
+		return
+	}
+	if getIssue {
+		a.store.Mu.RLock()
+		defer a.store.Mu.RUnlock()
+	} else {
+		a.store.Mu.Lock()
+		defer a.store.Mu.Unlock()
+	}
+	repo := a.store.Repos[repoKey(owner, name)]
+	if owner != ViewerLogin || repo == nil {
+		notFound(w)
+		return
+	}
+	if getIssue {
+		numberText, _ := url.PathUnescape(segments[7])
+		number, err := strconv.Atoi(numberText)
+		item, _ := repo.Items[number].(*Issue)
+		if err != nil || number <= 0 || strconv.Itoa(number) != numberText || item == nil || item.Kind != "issue" {
+			notFound(w)
+			return
+		}
+		sendIssueJSON(w, 200, item, repo)
+		return
+	}
+	title, ok := body["title"].(string)
+	text, textOK := body["body"].(string)
+	_, hasBody := body["body"]
+	labels := []string{}
+	valid := true
+	if value, exists := body["labels"]; exists {
+		labels, valid = issueLabels(value, repo)
+	}
+	if !ok || strings.TrimSpace(title) == "" || (hasBody && !textOK) || !valid {
+		validationFailed(w)
+		return
+	}
+	now := issueNow()
+	repo.NumberSeq++
+	i := &Issue{Number: repo.NumberSeq, Kind: "issue", Title: title, Body: text, State: "open", Labels: labels, CreatedAt: now, UpdatedAt: now, Seq: repo.NumberSeq}
+	repo.Items[i.Number] = i
+	sendIssueJSON(w, 201, i, repo)
 }

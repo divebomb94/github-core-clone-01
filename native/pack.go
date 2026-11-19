@@ -7,10 +7,13 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"strconv"
 	"sync"
 )
+
+var packObjectHashPool = sync.Pool{New: func() any { return sha1.New() }}
 
 // PktItem is a line, flush, delim, or response-end packet.
 type PktItem struct {
@@ -274,6 +277,7 @@ func parsePack(buf []byte, store *GitStore) (PackResult, error) {
 	offsets := make(map[int]GitObject)
 	resolved := make(map[string]GitObject)
 	result := PackResult{SHAs: []string{}, Count: count}
+	var hashBuf [sha1.Size]byte
 	for i := uint32(0); i < count; i++ {
 		entryOffset := pos
 		b, err := next()
@@ -351,10 +355,15 @@ func parsePack(buf []byte, store *GitStore) (PackResult, error) {
 				return PackResult{}, err
 			}
 		}
-		h := sha1.New()
-		fmt.Fprintf(h, "%s %d\x00", object.Type, len(object.Content))
+		h := packObjectHashPool.Get().(hash.Hash)
+		h.Reset()
+		h.Write(append(hashBuf[:0], object.Type...))
+		h.Write(append(hashBuf[:0], ' '))
+		h.Write(append(hashBuf[:0], strconv.Itoa(len(object.Content))...))
+		h.Write(append(hashBuf[:0], 0))
 		h.Write(object.Content)
-		sha := hex.EncodeToString(h.Sum(nil))
+		sha := hex.EncodeToString(h.Sum(hashBuf[:0]))
+		packObjectHashPool.Put(h)
 		offsets[entryOffset] = object
 		resolved[sha] = object
 		result.SHAs = append(result.SHAs, sha)

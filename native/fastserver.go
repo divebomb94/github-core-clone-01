@@ -344,8 +344,14 @@ func fastWrite(conn net.Conn, p []byte) error {
 func fastConnection(conn net.Conn, app *App) {
 	defer conn.Close()
 	r := bufio.NewReaderSize(conn, 32<<10)
+	var lastDeadlineSet time.Time
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+		now := time.Now()
+		if lastDeadlineSet.IsZero() || now.Sub(lastDeadlineSet) > 5*time.Second {
+			_ = conn.SetReadDeadline(now.Add(120 * time.Second))
+			_ = conn.SetWriteDeadline(now.Add(60 * time.Second))
+			lastDeadlineSet = now
+		}
 		if _, err := r.Peek(1); err != nil {
 			return
 		}
@@ -403,7 +409,6 @@ func fastConnection(conn net.Conn, app *App) {
 		if req.Method != "HEAD" {
 			out.Write(w.body.Bytes())
 		}
-		_ = conn.SetWriteDeadline(time.Now().Add(60 * time.Second))
 		err = fastWrite(conn, out.Bytes())
 		w.header = nil
 		// Avoid retaining unusually large responses in the pools.
