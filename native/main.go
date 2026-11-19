@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -17,6 +18,10 @@ func main() {
 }
 
 func run() int {
+	// The store is in-memory and allocation-heavy; a higher GC target trades spare RAM for CPU on the request hot paths.
+	debug.SetGCPercent(800)
+	debug.SetMemoryLimit(768 << 20)
+
 	base := strings.TrimRight(os.Getenv("MAKEFUN_ENV_URL"), "/")
 	if base == "" {
 		fmt.Fprintln(os.Stderr, "MAKEFUN_ENV_URL is required")
@@ -27,9 +32,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	server := &http.Server{Handler: NewApp(os.Getenv("MAKEFUN_SHOP_TOKEN"))}
-	go func() { _ = server.Serve(listener) }()
-	defer server.Close()
+	go serveFast(listener, NewApp(os.Getenv("MAKEFUN_SHOP_TOKEN")))
 	client := &http.Client{Timeout: 30 * time.Second}
 	body, _ := json.Marshal(map[string]int{"port": listener.Addr().(*net.TCPAddr).Port})
 	delay := 250 * time.Millisecond
